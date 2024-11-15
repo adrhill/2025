@@ -253,6 +253,7 @@ the JVP of our composed function $f$.
 
 We can also propagate vectors through our linear maps from the left-hand side, 
 resulting in **reverse-mode AD**, shown in Figure 5.
+It is also commonly called a **vector-Jacobian product** (VJP) or **pullback**.
 Just like forward-mode, reverse-mode is also matrix-free: **no intermediate Jacobians are materialized at any point**.
 
 {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/reverse_mode_eval.svg" class="img-fluid" %}
@@ -518,7 +519,58 @@ Instead, it returns an empty set.
 *TODO: switch to multivariate function, quickly discuss resulting Jacobian.*
 <!-- TODO -->
 
+<!-- Coloring techniques? -->
 ### Matrix coloring
+
+Coloring techniques, such as row and column colorings, are used to determine the seed vectors needed to compute the minimal number of directional derivatives required to recover all the non-zero entries of Jacobians.
+A seed vector is a linear combination of the rows or columns of the identity matrix.
+When a directional derivative of a vector-valued function is taken along this seed vector, the result is a linear combination of the corresponding rows or columns of the Jacobian.
+
+Theses methods relies on reverse or forward automatic differentiation (AD) to efficiently recover the compressed rows or columns of the Jacobian.
+This is particularly valuable when dealing with sparse Jacobians, as it enables significant compression without overlap among the non-zero entries.
+
+<div class="row mt-3">
+    <div class="col-sm mt-3 mt-md-0">
+        {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/smc_column_compressed.svg" class="img-fluid" %}
+    </div>
+    <div class="col-sm mt-3 mt-md-0">
+        {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/smc_column_decompressed.svg" class="img-fluid" %}
+    </div>
+</div>
+<div class="caption">
+    Figure 15: Sparse jacobian compressed by columns (left) and decompressed (right).
+</div>
+
+<div class="row mt-3">
+    <div class="col-sm mt-3 mt-md-0">
+        {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/smc_row_compressed.svg" class="img-fluid" %}
+    </div>
+    <div class="col-sm mt-3 mt-md-0">
+        {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/smc_row_decompressed.svg" class="img-fluid" %}
+    </div>
+</div>
+<div class="caption">
+    Figure 16: Sparse jacobian compressed by rows (left) and decompressed (right).
+</div>
+
+When the Jacobian contains at least one dense row and column, unidirectional coloring methods become less efficient.
+In such cases, the number of required directional derivatives is as large as the number of rows or columns in the Jacobian.
+To address this, bicoloring combines forward and reverse AD to reduce the total number of directional derivatives.
+
+<div class="row mt-3">
+    <div class="col-sm mt-3 mt-md-0">
+        {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/rectangle_column_coloring.svg" class="img-fluid" %}
+    </div>
+    <div class="col-sm mt-3 mt-md-0">
+        {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/rectangle_row_coloring.svg" class="img-fluid" %}
+    </div>
+    <div class="col-sm mt-3 mt-md-0">
+        {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/rectangle_bicoloring.svg" class="img-fluid" %}
+    </div>
+</div>
+<div class="caption">
+    Figure 17: Row coloring (left), column coloring (center), and bicoloring (right) of a sparse Jacobian containing two dense rows and columns.
+</div>
 
 ## Second-order sparse differentiation
 
