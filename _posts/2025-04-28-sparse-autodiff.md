@@ -50,15 +50,18 @@ toc:
   - name: Automatic sparse differentiation
     subsections:
     - name: Sparse matrices
-    - name: Leveraging structure
-    - name: Sparsity pattern detection and coloring
+    - name: Leveraging sparsity
+    - name: Pattern detection and coloring
   - name: Pattern detection
     subsections:
-    - name: Compressing Jacobians
-    - name: Propagating index sets
-    - name: Alternative evaluation
-  - name: Matrix coloring
-  - name: Second-order sparse differentiation
+    - name: Index sets
+    - name: Efficient propagation
+    - name: Operator overloading
+  - name: Coloring
+    subsections:
+    - name: Graph formulation
+    - name: Greedy algorithm
+  - name: Second order
   - name: Demonstration
 
 # Below is an example of injecting additional post-specific styles.
@@ -253,6 +256,7 @@ the JVP of our composed function $f$.
 
 We can also propagate vectors through our linear maps from the left-hand side, 
 resulting in **reverse-mode AD**, shown in Figure 5.
+It is also commonly called a **vector-Jacobian product** (VJP) or **pullback**.
 Just like forward-mode, reverse-mode is also matrix-free: **no intermediate Jacobians are materialized at any point**.
 
 {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/reverse_mode_eval.svg" class="img-fluid" %}
@@ -314,19 +318,20 @@ We refer to linear maps as "sparse linear maps" if they materialize to sparse ma
 
 Whene functions have many inputs and many outputs,
 a given output does not always depend on every single input.
-This endows the corresponding Jacobian with a sparse structure,
+This endows the corresponding Jacobian with a **sparsity pattern**,
 where zero coefficients denote an absence of (first-order) dependency.
 The previous case of a convolutional layer is a simple example.
 An even simpler example is an activation function applied elementwise,
 for which the Jacobian is the identity matrix.
 
-### Leveraging structure
+### Leveraging sparsity
 
-Assuming we know the structure of the Jacobian, we can find orthogonal, 
-non-overlapping columns or rows via a method called **matrix coloring** that we will go into more detail on later.
+For now, we assume that the sparsity pattern of the Jacobian is always the same, regardless of the input, and that we know it ahead of time.
+We say that two columns or rows of the Jacobian matrix are orthogonal if, for every index, at most one of them has a nonzero coefficient.
+In other words, their sparsity patterns are orthogonal vectors.
 
-**The core idea of ASD is that we can materialize multiple orthogonal columns or rows in a single evaluation.**
-Since linear maps are additive, it always holds that
+**The core idea of ASD is that we can materialize multiple orthogonal columns (or rows) in a single product evaluation.**
+Since linear maps are additive, it always holds that for a set of basis vectors,
 
 $$ \Dfc(\vbc{i}+\ldots+\vbc{j}) 
 = \underbrace{\Dfc(\vbc{i})}_{\left( \Jfc \right)_\colorv{i,:}} 
@@ -334,9 +339,10 @@ $$ \Dfc(\vbc{i}+\ldots+\vbc{j})
 + \underbrace{\Dfc(\vbc{j})}_{\left( \Jfc \right)_\colorv{j,:}} 
 . $$
 
-The right hand side summands each correspond to a column of the Jacobian.
-If the columns are **orthogonal** and their **structure is known**, 
-the sum can be decomposed into its summands, materializing multiple columns in a single JVP.
+The components of the sum on the right-hand side each correspond to a column of the Jacobian.
+If these columns are known to be **orthogonal**,
+the sum can be uniquely decomposed into its components, a process known as **decompression**.
+Thus, a single JVP is enough to compute the nonzero coefficients of several columns at once.
 
 {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/sparse_ad.svg" class="img-fluid" %}
 <div class="caption">
@@ -347,10 +353,8 @@ This specific example using JVPs corresponds to sparse forward-mode AD
 and is visualized in Figure 9, where all orthogonal columns have been colored in matching hues.
 By computing a single JVP with the vector $\mathbf{e}_1 + \mathbf{e}_2 + \mathbf{e}_5$, 
 we materialize the sum of the first, second and fifth column of our Jacobian.
-
-Since we can assume we know the structure of the Jacobian,
-we can assign the values in the resulting vector to the correct Jacobian entries.
-The full forward-mode ASD materialization of our toy Jacobian is shown in Figure X. 
+Then, we assign the values in the resulting vector back to the appropriate Jacobian entries.
+This final decompression step is shown in Figure X.
 
 <div class="row mt-3">
     <div class="col-sm mt-3 mt-md-0">
@@ -365,7 +369,7 @@ The full forward-mode ASD materialization of our toy Jacobian is shown in Figure
 </div>
 
 The same idea can also be applied to reverse mode AD, as shown in Figure Y.
-Instead of finding orthogonal column, we need to find orthogonal rows.
+Instead of leveraging orthogonal column, we exploit orthogonal rows.
 We can then materialize multiple rows in a single VJP.
 
 <div class="row mt-3">
@@ -383,11 +387,17 @@ We can then materialize multiple rows in a single VJP.
 ### Sparsity pattern detection and coloring
 
 Unfortunately, our initial assumption had a major flaw: 
-Since AD only gives us a composition of linear maps and linear maps are black-box functions,
+since AD only gives us a composition of linear maps and linear maps are black-box functions,
 the structure of the Jacobian is completely unknown.
+In other words, **we cannot tell which rows and columns are orthogonal without first materializing a Jacobian matrix.**
+But if we fully materialize a Jacobian via traditional AD, ASD isn't needed at all.
 
-**We can't tell which rows and columns are orthogonal without first materializing a Jacobian matrix.**
-But if we fully materialize a Jacobian via traditional AD, ASD isn't needed.
+The solution to this problem is shown in Figure 10 (a):
+in order to find orthogonal columns (or rows), we don't need to materialize the full Jacobian.
+Instead, it is enough to **detect the sparsity pattern** of the Jacobian.
+This binary-valued pattern contains enough information to deduce orthogonality.
+From there, we use a **coloring algorithm** to group mutually orthogonal columns (or rows) together.
+Such a coloring can be visualized on Figure 10 (b), where the yellow columns will be evaluated together and the light blue ones too.
 
 <div class="row mt-3">
     <div class="col-sm mt-3 mt-md-0">
@@ -398,18 +408,21 @@ But if we fully materialize a Jacobian via traditional AD, ASD isn't needed.
     </div>
 </div>
 <div class="caption">
-    Figure 10: The two elementary steps in ASD: (a) sparsity pattern detection, (b) coloring of the sparsity pattern.
+    Figure 10: The first two steps of ASD: (a) sparsity pattern detection, (b) coloring of the sparsity pattern.
 </div>
 
-The solution to this problem is shown in Figure 10:
-in order to find orthogonal columns (or rows), we don't need to materialize the full Jacobian.
-Instead, it is enough to materialize a binary sparsity pattern of the Jacobian.
-This pattern contains enough information to color it.
+To sum up, ASD consists of four steps:
 
-Performance is key: For one-off computations, these two steps need to be faster than the computation of columns or rows they allow us to skip. Otherwise, we didn't gain any performance.
-As we will see in later benchmarks, this level of performance can be achieved.
-Additionally, if we need to compute Jacobians multiple times and are able to reuse the sparsity pattern, 
-the cost of sparsity pattern detection and coloring can be amortized over time.
+1. Pattern detection
+2. Coloring
+3. Compressed AD
+4. Decompression
+
+We now describe the first two steps in more detail.
+Usually, these steps are much slower than a single call to the function $f$, but much faster than a full computation of the Jacobian with AD.
+This makes the sparse procedure worth it even for moderately large matrices.
+Additionally, if we need to compute Jacobians multiple times (for different inputs) and are able to reuse the sparsity pattern and the coloring result, 
+the cost of this prelude can be amortized over time.
 
 ## Pattern detection
 
@@ -418,16 +431,15 @@ Mirroring the diversity of existing approaches to AD,
 there are also many possible approaches to sparsity pattern detection,
 each with their own advantages and tradeoffs.
 
-The method we will present here corresponds to a binary forward-mode AD system 
-in which performance is gained by compressing matrix rows.
-*TODO: Alternatives include Bayesian probing, ...* 
+The method we describe is one of the most basic: it is equivalent to a binary forward-mode AD system.
+<!-- *TODO: Alternatives include Bayesian probing, ...*  -->
 <!-- TODO: cite a wide list of approaches here -->
 
-### Compressing Jacobians
+### Index sets
 
 Our goal with sparsity pattern detection is to quickly materialize the binary pattern of the Jacobian.
-One way to achieve better performance than traditional AD is to compress of rows of matrices to index sets.
-The $i$-th row of the Jacobian corresponds to 
+One way to achieve better performance than traditional AD is to encode row sparsity patterns as index sets.
+The $i$-th row of the Jacobian is given by 
 
 $$ \big( \Jf \big)_{i,:} 
 = \left[\dfdx{i}{j}\right]_{1 \le j \le n}
@@ -438,7 +450,6 @@ $$ \big( \Jf \big)_{i,:}
 \end{bmatrix} .
 $$
 
-This can naively be represented in a computer program by computing and storing using the corresponding $n$ first-order partial derivatives.
 However, since we are only interested in the binary pattern 
 
 $$ \left[\dfdx{i}{j} \neq 0\right]_{1 \le j \le n} , $$
@@ -448,15 +459,14 @@ we can instead represent the sparsity pattern of the $i$-th column of a Jacobian
 $$ \left\{j \;\Bigg|\; \dfdx{i}{j} \neq 0\right\} . $$
 
 These equivalent sparsity pattern representations are illustrated in Figure 11.
+Each row index set tells us **which inputs influenced a given output**, at the first-order. For instance, output $i=2$ was influenced by inputs $j=4$ and $j=5$.
 
 {% include figure.html path="assets/img/2025-04-28-sparse-autodiff/sparsity_pattern_representations.svg" class="img-fluid" %}
 <div class="caption">
-    Figure 11: Equivalent sparsity pattern representations: (a) uncompressed matrix, (b) binary pattern, (c) index set (compressed along rows).
+    Figure 11: Sparsity pattern representations: (a) original matrix, (b) binary pattern, (c) row index sets.
 </div>
 
-(Since the method we are about to show is essentially a binary forward-mode AD system, we compress along rows.)
-
-### Propagating index sets
+### Efficient propagation
 
 Figure 12 shows the traditional forward-AD pass we want to avoid:
 propagating a full identity matrix through a linear map would materialize the Jacobian of $f$, 
@@ -469,7 +479,7 @@ As previously discussed, this is not a viable option due to its inefficiency and
     Due to high memory requirements for intermediate Jacobians, this approach is inefficient or impossible.  
 </div>
 
-Instead, we *seed* an input vector with index sets corresponding to the compressed identity matrix. 
+Instead, we initialize an input vector with index sets corresponding to the identity matrix. 
 An alternative view on this vector is that it corresponds to the index set representation of the Jacobian of the input, since $\frac{\partial x_i}{\partial x_j} \neq 0$ only holds for $i=j$.
 
 Our goal is to propagate this index set such that we get an output vector of index sets 
@@ -481,15 +491,17 @@ This idea is visualized in Figure 13.
     Figure 13: Propagating an index set through a linear map to obtain a sparsity pattern.  
 </div>
 
-### Alternative evaluation
+### Operator overloading
 
 Instead of going into implementation details,
-we want to provide some intuition on the second key ingredient of our forward-mode sparsity detection: 
-**alternative function evaluation**.
+we want to provide some intuition on a typical implementation technique for sparsity detection: 
+**operator overloading**.
 
 We will demonstrate this on a second toy example, the function
 
 $$ f(\vx) = x_1 + x_2x_3 + \text{sgn}(x_4) .$$
+
+<!-- TODO: I don't see the graph here -->
 
 The corresponding computational graph is shown in Figure 14,
 where circular nodes correspond to elementary operators,
@@ -502,24 +514,49 @@ in this case addition, multiplication and the sign function.
 </div>
 
 As discussed in the previous section,
-all inputs are seeded with their respective input index sets.
-Figure 14 annotates these index sets on the edges of the computational graph.
-Our system for sparsity detection must now perform an **alternative evaluation of our computational graph**.
-Instead of computing the original function, 
-each operator must correctly propagate and accumulate the index sets of its inputs, 
-depending on whether an operator has a non-zero derivative or not.  
+all inputs are initialized with their respective singleton index sets.
+The sparsity detection system must walk through the computational graph in topological order.
+Each individual operator in the graph is "overloaded" to behave in a different way during sparsity detection.
+Instead of computing the output value, 
+it must correctly propagate and accumulate the index sets of its inputs, 
+depending on whether it has a non-zero derivative or not.  
 
-Since addition and multiplication globally have non-zero derivatives with respect to both of their inputs, 
+Figure 14 annotates index sets on the edges of the computational graph.
+Since addition and multiplication have non-zero derivatives with respect to both of their inputs, 
 the index sets of their inputs are accumulated and propagated. 
 The sign function has a zero-valued derivatives for any input value. 
 It therefore doesn't propagate the index set of its input. 
 Instead, it returns an empty set.
 
-*TODO: switch to multivariate function, quickly discuss resulting Jacobian.*
+<!-- *TODO: switch to multivariate function, quickly discuss resulting Jacobian.* -->
 <!-- TODO -->
 
-### Matrix coloring
+<!-- Coloring techniques? -->
+## Coloring
 
-## Second-order sparse differentiation
+Once we have detected a sparsity pattern, our next goal is to figure out how to group the columns (or rows) of the Jacobian.
+The columns (or rows) in each group will be evaluated simultaneously with a single JVP (or VJP).
+If they are mutually orthogonal, then this gives all the necessary information to retrieve every nonzero coefficient of the matrix.
+
+### Graph formulation
+
+Luckily, this can be reformulated as a graph coloring problem, which is very well studied.
+Let us build a graph $\mathcal{G} = (\mathcal{V}, \mathcal{E})$ such that each column is a vertex of the graph, and two vertices are connected iff their respective columns share a non-zero index.
+Put differently, an edge between vertices $j_1$ and $j_2$ means that columns $j_1$ and $j_2$ are not orthogonal.
+There are more efficient representations, but we leave them aside.
+
+We want to assign to each vertex $j$ a color $c(j)$, such that any two adjacent vertices $(j_1, j_2) \in \mathcal{E}$ have different colors $c(j_1) \neq c(j_2)$.
+This constraint ensures that columns in the same color group are indeed orthogonal.
+If we can find a coloring which uses the smallest possible number of distinct colors, it will minimize the number of groups, and thus the computational cost of the AD step.
+
+### Greedy algorithm
+
+Unfortunately, the graph coloring problem is NP-hard, meaning that there is (probably) no way to solve it polynomially for every instance.
+But there are efficient heuristics which generate good enough solutions in reasonable time.
+The most widely used is the greedy algorithm, which considers vertices one after the other.
+This algorithm assigns to each vertex the smallest color that is not present among its neighbors, and never backtracks.
+A crucial hyperparameter is the choice of ordering, for which various criteria have been proposed. 
+
+## Second order
 
 ## Demonstration
